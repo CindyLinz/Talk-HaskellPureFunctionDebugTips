@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html>
+  <!--
+    vim: filetype=markdown
+  -->
+  <head>
+    <title>Title</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+    <!-- powered by Remark https://github.com/gnab/remark -->
+    <!-- Haskell code styling powered by http://softwaremaniacs.org/soft/highlight/en/ -->
+    <link rel="stylesheet" href="highlight.js/styles/tomorrow.css"/>
+    <script src="highlight.js/highlight.pack.js"></script>
+    <style type="text/css">
+      /* Slideshow styles */
+      .small {
+        font-size: smaller
+      }
+      .remark-slide-content:before {
+        content: 'Does it run backwards?'
+      }
+      .remark-slide-content.center:before {
+        content: none
+      }
+    </style>
+  </head>
+  <body>
+    <textarea id="source">
+
+class: center, middle
+
+# Haskell pure function debug 小技巧
+
+### 2014.1.9
+## CindyLinz
+
+---
+
+layout: true
+
+# 範例程式
+
+---
+
+```
+  qsort :: Ord a => [a] -> [a]
+  qsort [] = []
+  qsort (x : xs) = sub ( < x ) ++ [x] ++ sub ( > x ) where
+    sub p = qsort $ filter p xs
+```
+---
+
+layout: true
+
+# 起手式
+
+---
+
+```shell
+$ ulimit -S -v 1048576
+```
+
+--
+
++ 我們正面對的是一個應該有錯誤的程式
+
+--
+
++ Haskell 的 type system 給了我們很多保證，去掉了很多常見的問題
+
+--
+
++ 還剩下的問題裡面 <b>無窮迴圈</b> 和 <b>記憶體吃爆</b> 的出現比例比別的語言高..
+
+--
+
++ Haskell 有很方便的工具，會引誘我們一開始就作極限測試
+
+--
+
++ 如果開始吃到 swap，電腦會卡住好一陣子不太能動 (時間長短視 swap 大小而定)
+
+---
+
+layout: true
+
+# 使用 QuickCheck 製造反例
+
+---
+
++ 目標是 pure function，參數與 return 值是天然的封閉環境，可以作 Unit Test
+
+--
+
++ 用 function 來描述正確的參數與結果應該有哪些特性
+
+---
+
++ 排序後的 List 應該會由小到大
+  ```
+    isOrdered :: Ord a => [a] -> Bool
+    isOrdered (x1 : x2 : xs) = x1 <= x2 && isOrdered (x2 : xs)
+    isOrdered _ = True
+  ```
+
+--
+
++ 排序前後的 List 應該一樣長
+  ```
+    isSameLength :: [a] -> [a] -> Bool
+    isSameLength as bs = length as == length bs
+  ```
+
+--
+
++ 合在一起作為檢查調件
+  ```
+    isCorrect :: Ord a => [a] -> Bool
+    isCorrect as = isOrdered as' && isSameLength as as' where
+      as' = qsort as
+  ```
+
+---
+
++ 由 QuickCheck 生測資檢查
+  ```
+    quickCheck (isCorrect :: [Int] -> Bool)
+  ```
+
+--
+
++ 多測幾組
+  ```
+    quickCheckWith stdArgs { maxSuccess = 1000 } (isCorrect :: [Int] -> Bool)
+  ```
+
+--
+
++ 測大數字
+  ```
+    quickCheckWith stdArgs { maxSize = 1000 } (isCorrect :: [Int] -> Bool)
+  ```
+
+--
+
++ 個別標示條件的名稱
+
+  ```
+    isCorrect :: Ord a => [a] -> Property
+    isCorrect as = prop1 .&&. prop2 where
+      prop1 = (liftBool $ isOrdered as') {reason = "isOrdered"}
+      prop2 = (liftBool $ isSameLength as as') {reason = "isSameLength"}
+      as' = qsort as
+  ```
+
+---
+
+layout: true
+
+# 使用 Debug.Trace 印 debug message
+
+---
+
++ 印 debug message (log) 是我在 C / Perl 工作時的習慣
+
+--
+
++ 正常的 pure 函數不能印東西出來
+
+--
+
++ 如果你是 Haskell compiler，就可以<br>
+  .small[(用 unsafe 黑魔法也可以)]
+
+--
+
++ Haskell standard library 提供的 Debug.Trace module 裡面有這些函數 (只有列出我覺得比較有用的)
+
+  ```
+    trace :: String -> a -> a
+      -- 把第一個參數 (String) 印出來, 然後 return 第二個參數
+
+    traceShow :: Show a => a -> b -> b
+      -- 把第一個參數 show 出來, 然後 return 第二個參數
+
+    traceStack :: String -> a -> a
+      -- 把第一個參數 (String) 印出來, 把 call stack 印出來，然後 return 第二個參數
+  ```
+
+  NOTE:<br>
+  必須加開 compile 參數 -prof，才會印出 stack trace，不然它和 trace 效果一樣<br>
+  建議加開 -fprof-auto 或 -fprof-auto-calls 參數，才會有 symbol table 可看
+
+--
+
++ 我習慣自己再加上一個
+  ```
+    traceSelf :: Show a => a -> a
+    traceSelf a = traceShow a a
+  ```
+
+---
+
++ 用這樣的方式來看一個函數的 input 和 output
+  ```
+    f A = outputA
+    f B = outputB
+    -- 假設原始函數長這樣
+
+    f A = trace "f<" $ traceShow A $ trace "f>" $ traceSelf $ outputA
+    f B = trace "f<" $ traceShow B $ trace "f>" $ traceSelf $ outputB
+    -- 改成這樣
+
+    f a = trace "f<" $ traceShow a $ trace "f>" $ traceSelf $ f a where
+      f A = outputA
+      f B = outputB
+    -- 或改成這樣
+    -- PS: 裡面可以用同名的，裡面會 shadow 外面 <3
+
+    f a | trace "f<" $ traceShow a False = undefined
+    f A = trace "f>" $ traceSelf $ outputA
+    f B = trace "f>" $ traceSelf $ outputB
+    -- 有人建議參數部分這樣寫，可以只寫一次印參數的程式
+  ```
+
+---
+
++ 可能會有不能印的東西，例如說原本已知不會被 access 到的部分被放 undefined，或無窮遞迴，要小心避開
+
+--
+
++ 會影響 eval 的順序 (要被印出來的東西會在當下被 eval 掉)，<br>
+  但既然是 pure 函數，這應該只影響效能不影響正確性
+
+--
+
++ PS:<br>
+  測試版會印出正確答案時原版不會印出錯誤答案<br>
+  測試版會印出錯誤答案時原版不會印出正確答案<br>
+  原版會印出正確答案時測試版不會印出錯誤答案<br>
+  原版會印出錯誤答案時測試版不會印出正確答案
+
+---
+
++ 如果是在 polymorphic type 的 pure function 裡面，可能原本沒有要求傳進來要印的東西是可以 Show 的
+
+  ```
+    qsort :: Ord a => [a] -> [a]
+    qsort as = trace ("input " ++ show as ++ "\n") $ ... -- as is not an instance of Show
+  ```
+
+--
+
++ 加上 instance Show 到必要的地方<br>
+  BUT: 所有呼叫到它的地方也都要跟著加<br>
+  BUT: 最後版本不會有這個限制，最後要再拔掉
+
+--
+
++ 把 type signature 拿掉 (by a127a127)<br>
+  BUT: 所有呼叫它的地方也都要一起暫時拿掉<br>
+  BUT: 一般建議 top level function 要有 type signature，所以先用註解掉的，最後再放回來<br>
+  BUT: 用到 existential type 的時候一定要有 type signature 才能 compile
+
+--
+
++ 使用 partial signature 黑技巧<br>
+  BUT: 這寫法不是很常見，可能會有人看不懂<br>
+  BUT: 所有呼叫它的地方也都要一起用<br>
+  BUT: 我覺得它是黑技巧
+
+---
+
+layout: true
+
+# 使用 +RTS -xc 看 exception 發生位置
+
+---
+
++ runtime exception 發生時會印出 stacktrace
+
+--
+
++ Compile 參數
+  - 必要: -prof
+  - 建議選用: -fprof-auto 或 -fprof-auto-calls<br>
+    才會有顯示出來要用的 symbol table
+
+--
+
++ 執行的時候加上 RTS 參數
+  ```shell
+    ./test +RTS -xc
+  ```
+
+---
+
+layout: true
+
+# 使用 NoTrace package 把 trace 等函數換成 no-op
+
+---
+
++ 使用 [NoTrace package](http://hackage.haskell.org/package/NoTrace)，把
+
+  ```haskell
+  import Debug.Trace
+  ```
+
+  改成
+
+  ```haskell
+  import Debug.NoTrace
+  ```
+
+  會把這 module 裡來自 Debug.Trace 的函數都換成 no-op
+
+--
+
++ 可在開發過程中，作為 module 逐一 debug 的開關
+
++ 我試過看 ghc -O2 生出來的 simpl 裡面，使用 NoTrace 之後會把這些 trace 函數關聯的程式完全去除掉<br>
+  所以 debug 完，整個 project 就可以直接這樣 release 了
+
++ 不過如果有潔癖的話，可能最後 release 的時候還是會想手動把這些 trace 函數從原始程式碼裡面完全清乾淨
+
+---
+
+layout: true
+
+# Future Topics
+
+---
+
+(我還不會..)
+
++ QuickCheck 各種實用法
+
++ 更多 Haskell 黑技巧
+
+    </textarea>
+    <script src="remark-0.5.6.min.js" type="text/javascript">
+    </script>
+    <script type="text/javascript">
+      var slideshow = remark.create();
+    </script>
+  </body>
+</html>
